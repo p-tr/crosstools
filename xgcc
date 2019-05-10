@@ -2,6 +2,7 @@
 
 PREFIX=${HOME}/.local
 TARGET=x86_64-pc-elf
+LANGUAGES=c
 
 BINUTILS_VERSION=2.32
 GCC_VERSION=8.3.0
@@ -43,11 +44,12 @@ function do_usage {
   echo "$0 COMMAND [options]"
   echo ""
   echo "commands :"
-  echo "  build                build GCC cross compiler"
-  echo "  clean                reset build environment"
+  echo "  build                           build GCC cross compiler"
+  echo "  clean                           reset build environment"
   echo ""
   echo "options :"
-  echo "  --target=TARGET      GCC cross compiler target"
+  echo "  --target=TARGET                 GCC cross compiler target"
+  echo "  --enable-languages=LANGUAGES    GCC enabled languages"
   echo ""
 
   do_exit $@
@@ -60,32 +62,35 @@ function parse_command_line {
       --target=*)
         TARGET=$(echo $opt | sed 's/--target=//g')
         ;;
+      --enable-languages=*)
+        LANGUAGES=$(echo $opt | sed 's/--enable-languages=//g')
+        ;;
     esac
   done
 }
 
 function do_build {
-  _ mkdir -p ${SRCDIR} ${BINUTILSBUILDDIR} ${GCCBUILDDIR}
+  mkdir -p ${SRCDIR} ${BINUTILSBUILDDIR} ${GCCBUILDDIR}
 
   (cd ${SRCDIR} && {
     if ! [ -f ${BINUTILSARCHIVE} ]
     then
-      _ wget ${BINUTILSURL}
+      wget ${BINUTILSURL}
     fi
 
     if ! [ -d ${BINUTILSTAG} ]
     then
-      _ tar xfz ${BINUTILSARCHIVE}
+      tar xfz ${BINUTILSARCHIVE}
     fi
 
     if ! [ -f ${GCCARCHIVE} ]
     then
-      _ wget ${GCCURL}
+      wget ${GCCURL}
     fi
 
     if ! [ -d ${GCCTAG} ]
     then
-      _ tar xfz ${GCCARCHIVE}
+      tar xfz ${GCCARCHIVE}
     fi
 
     (cd ${GCCTAG} && ./contrib/download_prerequisites >/dev/null 2>&1)
@@ -105,10 +110,15 @@ function do_build {
     case $TARGET in
       x86_64-*-elf*)
         MULTILIB_CONFIG_FILE=${SRCDIR}/${GCCTAG}/gcc/config/i386/t-kernel-amd64
+        CONFIG_FILE=${SRCDIR}/${GCCTAG}/gcc/config.gcc
         if ! [ -f ${MULTILIB_CONFIG_FILE} ]
         then
           echo "MULTILIB_OPTIONS += mno-red-zone" > ${MULTILIB_CONFIG_FILE}
           echo "MULTILIB_DIRNAMES += kernel" >> ${MULTILIB_CONFIG_FILE}
+        fi
+        if [ -z "`cat ${CONFIG_FILE} | grep t-kernel-amd64`" ]
+        then
+          sed -i 's,x86_64-\*-elf\*),x86_64-\*-elf\*)\n\ttmake_file="${tmake_file} i386/t-kernel-amd64",g' ${CONFIG_FILE}
         fi
         ;;
       *)
@@ -116,15 +126,7 @@ function do_build {
     esac
 
     (cd ${GCCBUILDDIR} && {
-      if ! [ -f config.gcc.orig ]
-      then
-        mv -v ${SRCDIR}/${GCCTAG}/gcc/config.gcc config.gcc.orig
-      fi
-
-      cat config.gcc.orig | sed 's,x86_64-\*-elf\*),x86_64-\*-elf\*)\n\ttmake_file="${tmake_file} i386/t-kernel-amd64",g' > config.gcc
-      mv -v config.gcc ${SRCDIR}/${GCCTAG}/gcc/config.gcc
-
-      ${SRCDIR}/${GCCTAG}/configure --target=${TARGET} --prefix="${PREFIX}" --disable-nls --enable-languages=c,c++ --without-headers
+      ${SRCDIR}/${GCCTAG}/configure --target=${TARGET} --prefix="${PREFIX}" --disable-nls --enable-languages=${LANGUAGES} --without-headers
       make -j ${JOBS} all-gcc all-target-libgcc
       make install-gcc install-target-libgcc
     })
@@ -133,6 +135,12 @@ function do_build {
 
 function do_clean {
   _ rm -rf ${BUILDROOTDIR}/*
+  _ rm -f ${PREFIX}/bin/${TARGET}-*
+  _ rm -rf ${PREFIX}/${TARGET}
+  _ rm -rf ${PREFIX}/lib/gcc/${TARGET}
+  _ rm -rf ${PREFIX}/libexec/gcc/${TARGET}
+  _ rm -rf ${PREFIX}/src/gcc*
+  _ rm -rf ${PREFIX}/src/binutils*
 }
 
 # do we have to fix the path ?
@@ -155,6 +163,12 @@ else
       ;;
     clean)
       do_clean $@
+      ;;
+    help)
+      do_usage
+      ;;
+    *)
+      do_usage 1
       ;;
   esac
 fi
