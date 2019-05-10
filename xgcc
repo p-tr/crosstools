@@ -1,0 +1,160 @@
+#!/bin/bash
+
+PREFIX=${HOME}/.local
+TARGET=x86_64-pc-elf
+
+BINUTILS_VERSION=2.32
+GCC_VERSION=8.3.0
+
+TMPDIR=${PREFIX}/tmp
+SRCDIR=${PREFIX}/src
+
+BUILDROOTDIR=${TMPDIR}/.crosstools
+
+BINUTILSBUILDDIR=${BUILDROOTDIR}/binutils-${BINUTILS_VERSION}/${TARGET}
+GCCBUILDDIR=${BUILDROOTDIR}/gcc-${GCC_VERSION}/${TARGET}
+GCCTAG=gcc-${GCC_VERSION}
+GCCARCHIVE=${GCCTAG}.tar.gz
+BINUTILSTAG=binutils-${BINUTILS_VERSION}
+BINUTILSARCHIVE=${BINUTILSTAG}.tar.gz
+GCCURL=ftp://ftp.gnu.org/gnu/gcc/${GCCTAG}/${GCCARCHIVE}
+BINUTILSURL=ftp://ftp.gnu.org/gnu/binutils/${BINUTILSARCHIVE}
+
+JOBS=$(nproc)
+
+function _ {
+  echo "$@"
+  $@
+}
+
+function do_exit {
+  if [ -z "$1" ]
+  then
+    exit 0
+  else
+    exit $1
+  fi
+}
+
+function do_usage {
+  echo ""
+  echo "$0 - GCC cross-compiler builder"
+  echo ""
+  echo "$0 COMMAND [options]"
+  echo ""
+  echo "commands :"
+  echo "  build                build GCC cross compiler"
+  echo "  clean                reset build environment"
+  echo ""
+  echo "options :"
+  echo "  --target=TARGET      GCC cross compiler target"
+  echo ""
+
+  do_exit $@
+}
+
+function parse_command_line {
+  for opt in $@
+  do
+    case $opt in
+      --target=*)
+        TARGET=$(echo $opt | sed 's/--target=//g')
+        ;;
+    esac
+  done
+}
+
+function do_build {
+  _ mkdir -p ${SRCDIR} ${BINUTILSBUILDDIR} ${GCCBUILDDIR}
+
+  (cd ${SRCDIR} && {
+    if ! [ -f ${BINUTILSARCHIVE} ]
+    then
+      _ wget ${BINUTILSURL}
+    fi
+
+    if ! [ -d ${BINUTILSTAG} ]
+    then
+      _ tar xfz ${BINUTILSARCHIVE}
+    fi
+
+    if ! [ -f ${GCCARCHIVE} ]
+    then
+      _ wget ${GCCURL}
+    fi
+
+    if ! [ -d ${GCCTAG} ]
+    then
+      _ tar xfz ${GCCARCHIVE}
+    fi
+
+    (cd ${GCCTAG} && ./contrib/download_prerequisites >/dev/null 2>&1)
+  })
+
+  if [ -z "`which ${TARGET}-as`" ]
+  then
+    (cd ${BINUTILSBUILDDIR} && {
+      ${SRCDIR}/${BINUTILSTAG}/configure --target=${TARGET} --prefix="${PREFIX}" --with-sysroot --disable-nls
+      make -j ${JOBS}
+      make install
+    })
+  fi
+
+  if [ -z "`which ${TARGET}-gcc`" ]
+  then
+    case $TARGET in
+      x86_64-*-elf*)
+        MULTILIB_CONFIG_FILE=${SRCDIR}/${GCCTAG}/gcc/config/i386/t-kernel-amd64
+        if ! [ -f ${MULTILIB_CONFIG_FILE} ]
+        then
+          echo "MULTILIB_OPTIONS += mno-red-zone" > ${MULTILIB_CONFIG_FILE}
+          echo "MULTILIB_DIRNAMES += kernel" >> ${MULTILIB_CONFIG_FILE}
+        fi
+        ;;
+      *)
+        ;;
+    esac
+
+    (cd ${GCCBUILDDIR} && {
+      if ! [ -f config.gcc.orig ]
+      then
+        mv -v ${SRCDIR}/${GCCTAG}/gcc/config.gcc config.gcc.orig
+      fi
+
+      cat config.gcc.orig | sed 's,x86_64-\*-elf\*),x86_64-\*-elf\*)\n\ttmake_file="${tmake_file} i386/t-kernel-amd64",g' > config.gcc
+      mv -v config.gcc ${SRCDIR}/${GCCTAG}/gcc/config.gcc
+
+      ${SRCDIR}/${GCCTAG}/configure --target=${TARGET} --prefix="${PREFIX}" --disable-nls --enable-languages=c,c++ --without-headers
+      make -j ${JOBS} all-gcc all-target-libgcc
+      make install-gcc install-target-libgcc
+    })
+  fi
+}
+
+function do_clean {
+  _ rm -rf ${BUILDROOTDIR}/*
+}
+
+# do we have to fix the path ?
+if [ -z "`echo $PATH | grep $PREFIX`" ]
+then
+  export PATH="${PREFIX}/bin:$PATH"
+fi
+
+# command parser
+COMMAND=$1
+if [ -z "$COMMAND" ]
+then
+  do_usage 1
+else
+  shift
+  parse_command_line $@
+  case $COMMAND in
+    build)
+      do_build $@
+      ;;
+    clean)
+      do_clean $@
+      ;;
+  esac
+fi
